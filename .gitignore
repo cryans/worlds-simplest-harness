@@ -1,0 +1,22 @@
+# Python
+backend/.venv/
+backend/.uv-cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.pnpm-store/
+frontend/.pnpm-cache/
+frontend/.xdg-data/
+frontend/.xdg-cache/
+
+# Editor / OS
+.DS_Store
+*.log
+
+# Sample project
+sample-project*/

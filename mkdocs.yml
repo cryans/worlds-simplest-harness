@@ -1,0 +1,12 @@
+# Build with:  mkdocs build     (or  mkdocs serve  to preview)
+# Theme is mkdocs' built-in default. To use the prettier Material theme instead,
+# `pip install mkdocs-material` and add:  theme: { name: material }
+
+site_name: World's Simplest Harness
+site_description: A minimal coding harness you can understand end-to-end.
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Architecture: architecture.md
+  - Tools: tools.md
