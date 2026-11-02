@@ -21,13 +21,85 @@ body {
   color: var(--text);
 }
 
+.layout {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 260px;
+  flex: 0 0 260px;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.new-chat {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.new-chat:hover:not(:disabled) { border-color: var(--accent); }
+.new-chat:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.session-item:hover:not(:disabled) { background: rgba(79, 140, 255, 0.08); }
+.session-item.active {
+  background: rgba(79, 140, 255, 0.14);
+  border-color: var(--accent);
+}
+.session-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.session-time { font-size: 0.78rem; color: var(--text); }
+.session-id { font-size: 0.72rem; color: var(--muted); }
+.session-empty { color: var(--muted); font-size: 0.85rem; padding: 6px; }
+
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  flex: 1;
   max-width: 900px;
   margin: 0 auto;
   padding: 0 16px;
+  min-width: 0;
 }
 
 header {
@@ -100,6 +172,13 @@ code {
   background: #3a1d1d;
   border: 1px solid #6b2a2a;
   color: #ffb4b4;
+}
+
+.bubble.incomplete {
+  background: #3a331d;
+  border: 1px solid #6b5a2a;
+  color: #ffe2a8;
+  font-size: 0.9rem;
 }
 
 /* small "what is this box" label at the top of each box */
@@ -257,4 +336,16 @@ footer button {
 footer button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .layout { flex-direction: column; }
+  .sidebar {
+    width: auto;
+    flex: 0 0 auto;
+    max-height: 30vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .app { height: auto; flex: 1; }
 }

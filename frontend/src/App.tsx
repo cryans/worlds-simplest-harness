@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -11,9 +11,34 @@ type BashResult = {
   error?: string;
 };
 type Step = { name: string; args: Record<string, unknown>; result?: BashResult };
-type Turn = { user: string; answer: string; steps: Step[]; error?: string };
+type Turn = {
+  user: string;
+  answer: string;
+  steps: Step[];
+  error?: string | null;
+  incomplete?: boolean;
+};
 
-// One event streamed from the backend. `type` is: session | status | tool_call | tool_result | answer | error
+// Ordered by the backend (newest first); the UI renders as received and never
+// sorts. `updated_at` is only used to format the label.
+type SessionMeta = {
+  id: string;
+  created_at?: string;
+  updated_at?: string;
+  user_turns: number;
+  messages: number;
+  preview?: string;
+};
+
+type SessionPayload = {
+  session_id: string;
+  model?: string;
+  started_at?: string;
+  messages: Record<string, unknown>[];
+  turns: Turn[];
+  warnings: string[];
+};
+
 type SseEvent = {
   type: string;
   text?: string;
@@ -22,9 +47,27 @@ type SseEvent = {
   result?: BashResult;
   content?: string;
   message?: string;
-  messages?: Record<string, unknown>[]; // the full OpenAI-format history
-  session_id?: string; // the backend's session id (reused across turns)
+  messages?: Record<string, unknown>[];
+  session_id?: string;
 };
+
+// ---------- helpers ---------------------------------------------------------
+
+// Local time, formatted "yyyy-mm-dd hh-mm-ss".
+function fmt(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`
+  );
+}
+
+function sessionParam(): string | null {
+  return new URLSearchParams(window.location.search).get("session");
+}
 
 // ---------- component --------------------------------------------------------
 
@@ -33,16 +76,15 @@ export default function App() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // The OpenAI-format message history we send back every turn. The backend
-  // hands us the authoritative updated list in the final "answer" event.
-  const history = useRef<Record<string, unknown>[]>([]);
+  // Session list (sidebar) + selection.
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // The backend's session id: generated on the first turn, then echoed back
-  // so every later turn appends to the same logs/{session-id}.jsonl file.
+  const history = useRef<Record<string, unknown>[]>([]);
   const sessionIdRef = useRef<string | null>(null);
 
-  // Mutable parts of the turn currently being built. We write to refs as
-  // events arrive, then copy them into React state so the UI re-renders.
   const stepsRef = useRef<Step[]>([]);
   const answerRef = useRef("");
   const errorRef = useRef<string | undefined>(undefined);
@@ -51,6 +93,7 @@ export default function App() {
 
   function syncCurrentTurn() {
     setTurns((prev) => {
+      if (prev.length === 0) return prev;
       const next = [...prev];
       const last = next[next.length - 1];
       next[next.length - 1] = {
@@ -62,6 +105,56 @@ export default function App() {
       return next;
     });
   }
+
+  async function refreshSessions() {
+    try {
+      const resp = await fetch("/api/sessions");
+      if (resp.ok) setSessions((await resp.json()).sessions ?? []);
+    } catch {
+      /* non-fatal: leave the list as-is */
+    }
+  }
+
+  async function openSession(id: string) {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const resp = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
+      if (!resp.ok) throw new Error(`Could not load session (HTTP ${resp.status})`);
+      const data: SessionPayload = await resp.json();
+      setTurns(data.turns);
+      history.current = data.messages;
+      sessionIdRef.current = data.session_id;
+      setSelectedId(data.session_id);
+      // Deep-link: reflect the selection in the URL.
+      const url = new URL(window.location.href);
+      url.searchParams.set("session", data.session_id);
+      window.history.replaceState(null, "", url);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function newChat() {
+    setTurns([]);
+    history.current = [];
+    sessionIdRef.current = null;
+    setSelectedId(null);
+    setLoadError(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session");
+    window.history.replaceState(null, "", url);
+  }
+
+  // On mount: load the list, and auto-open ?session=<id> if present.
+  useEffect(() => {
+    refreshSessions();
+    const id = sessionParam();
+    if (id) openSession(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function send() {
     const text = input.trim();
@@ -97,8 +190,6 @@ export default function App() {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE events are separated by a blank line. Keep the last (possibly
-        // incomplete) chunk in the buffer.
         const blocks = buffer.split("\n\n");
         buffer = blocks.pop() ?? "";
 
@@ -111,6 +202,7 @@ export default function App() {
 
           if (event.type === "session") {
             sessionIdRef.current = event.session_id ?? null;
+            if (event.session_id) setSelectedId(event.session_id);
           } else if (event.type === "tool_call") {
             stepsRef.current.push({
               name: event.name ?? "",
@@ -124,7 +216,10 @@ export default function App() {
           } else if (event.type === "answer") {
             answerRef.current = event.content ?? "";
             if (event.messages) history.current = event.messages;
-            if (event.session_id) sessionIdRef.current = event.session_id;
+            if (event.session_id) {
+              sessionIdRef.current = event.session_id;
+              setSelectedId(event.session_id);
+            }
             syncCurrentTurn();
           } else if (event.type === "error") {
             errorRef.current = event.message ?? "Unknown error";
@@ -139,50 +234,79 @@ export default function App() {
       syncCurrentTurn();
     } finally {
       setBusy(false);
+      // (Re)load the sidebar so the new/updated session sorts to the top.
+      refreshSessions();
     }
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>World's Simplest Harness</h1>
-        <p>
-          Ask it to build something — it runs <code>bash</code> in{" "}
-          <code>sample-project/</code>.
-        </p>
-      </header>
-
-      <main className="chat">
-        {turns.length === 0 && (
-          <div className="empty">
-            Try: <em>"Create a Python script that prints the first 20 Fibonacci
-            numbers, then run it."</em>
-          </div>
-        )}
-
-        {turns.map((turn, i) => (
-          <TurnView key={i} turn={turn} />
-        ))}
-        <div ref={bottomRef} />
-      </main>
-
-      <footer>
-        <textarea
-          value={input}
-          placeholder="Ask the harness to do something…"
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          rows={3}
-        />
-        <button onClick={send} disabled={busy || !input.trim()}>
-          {busy ? "Working…" : "Send"}
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="sidebar-header">Sessions</div>
+        <button className="new-chat" onClick={newChat} disabled={busy}>
+          + New chat
         </button>
-      </footer>
+        <ul className="session-list">
+          {sessions.map((s) => (
+            <li key={s.id}>
+              <button
+                className={`session-item${s.id === selectedId ? " active" : ""}`}
+                onClick={() => openSession(s.id)}
+                disabled={busy || loading}
+                title={s.preview ? `${s.id}\n${s.preview}` : s.id}
+              >
+                <span className="session-time">{fmt(s.updated_at)}</span>
+                <span className="session-id">{s.id.slice(0, 5)}</span>
+              </button>
+            </li>
+          ))}
+          {sessions.length === 0 && <li className="session-empty">No sessions yet.</li>}
+        </ul>
+      </aside>
+
+      <div className="app">
+        <header>
+          <h1>World's Simplest Harness</h1>
+          <p>
+            Ask it to build something — it runs <code>bash</code> in{" "}
+            <code>sample-project/</code>.
+          </p>
+        </header>
+
+        <main className="chat">
+          {loading && <div className="empty">Loading session…</div>}
+          {loadError && <div className="bubble error">{loadError}</div>}
+          {!loading && !loadError && turns.length === 0 && (
+            <div className="empty">
+              Try: <em>"Create a Python script that prints the first 20 Fibonacci
+              numbers, then run it."</em>
+            </div>
+          )}
+
+          {turns.map((turn, i) => (
+            <TurnView key={i} turn={turn} />
+          ))}
+          <div ref={bottomRef} />
+        </main>
+
+        <footer>
+          <textarea
+            value={input}
+            placeholder="Ask the harness to do something…"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            rows={3}
+          />
+          <button onClick={send} disabled={busy || !input.trim()}>
+            {busy ? "Working…" : "Send"}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }
@@ -237,6 +361,13 @@ function TurnView({ turn }: { turn: Turn }) {
             </div>
           </div>
         )
+      )}
+
+      {turn.incomplete && (
+        <div className="bubble incomplete">
+          <div className="box-header">Note</div>
+          (session ended mid-turn — no answer was recorded)
+        </div>
       )}
     </div>
   );

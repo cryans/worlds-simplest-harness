@@ -37,7 +37,7 @@ from typing import Any, get_type_hints
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, create_model
@@ -239,6 +239,13 @@ class SessionLog:
         """Log the model request. ``convo`` has the system message at [0]; the
         delta is only the conversation messages added since the last request."""
         msgs = convo[1:]  # the system message is captured in the header
+        # `_logged` is the number of messages the *file* says are already known.
+        # A failed/aborted turn changes the conversation without the matching
+        # messages ever reaching the file, so trust the client's history as the
+        # source of truth whenever it disagrees: replay stays aligned with what
+        # the next request actually sends.
+        if len(msgs) < self._logged:
+            self._logged = len(msgs)
         delta = msgs[self._logged :]
         self._logged = len(msgs)
         self._append(
@@ -270,6 +277,206 @@ class SessionLog:
     def write_error(self, message: str, step: int) -> None:
         """Log a failed model call (its request line is already on disk)."""
         self._append({"type": "error", "step": step, "message": message})
+
+
+# --- reading session logs back into UI state ------------------------------
+
+
+def read_records(path: Path) -> tuple[list[dict], int]:
+    """Read a JSONL file into ``(records, skipped)``.
+
+    Records are returned in file order (which is ``seq`` order). Blank lines and
+    lines that aren't valid JSON (e.g. a torn trailing write after a crash) are
+    skipped and counted, never raised.
+    """
+    records: list[dict] = []
+    skipped = 0
+    if not path.exists():
+        return records, skipped
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            skipped += 1
+            continue
+        if isinstance(rec, dict):
+            records.append(rec)
+        else:
+            skipped += 1
+    return records, skipped
+
+
+def _parse_json_arg(value: Any, default: Any) -> Any:
+    """Tool args/results are JSON strings in the log; decode defensively."""
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _unanswered_tool_call_indexes(messages: list[dict]) -> list[int]:
+    """Indexes of assistant messages whose ``tool_calls`` lack replies.
+
+    A message is dangling when any of its ``tool_call_id``s has no ``tool``
+    message in the run of messages immediately following it (the OpenAI wire
+    format requires the replies to be adjacent, in any order).
+    """
+    dangling: list[int] = []
+    for i, msg in enumerate(messages):
+        ids = {tc.get("id") for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict)}
+        ids.discard(None)
+        if msg.get("role") != "assistant" or not ids:
+            continue
+        answered: set = set()
+        for nxt in messages[i + 1 :]:
+            if nxt.get("role") != "tool":
+                break
+            answered.add(nxt.get("tool_call_id"))
+            if ids <= answered:
+                break
+        if not ids <= answered:
+            dangling.append(i)
+    return dangling
+
+
+def prepare_session(path: Path) -> dict:
+    """Rebuild UI-only state from a session log. Read-only; never calls the model.
+
+    Concatenates every ``request.delta`` and ``response.message`` in order to
+    rebuild the OpenAI-format message list (system message excluded), then groups
+    it into ``turns`` shaped like the frontend's ``Turn``:
+
+        {user, steps: [{name, args, result}], answer, error?, incomplete?}
+
+    Tolerates malformed input: bad lines are skipped (and warned about), unknown
+    roles are ignored, and orphan tool results are dropped from rendering.
+    """
+    records, skipped = read_records(path)
+    warnings: list[str] = []
+    if skipped:
+        warnings.append(f"skipped {skipped} unreadable line(s)")
+
+    header: dict = {}
+    messages: list[dict] = []
+    errors_by_step: dict[int, str] = {}
+
+    for rec in records:
+        rtype = rec.get("type")
+        if rtype == "session":
+            header = rec
+        elif rtype == "request":
+            delta = rec.get("delta") or []
+            if isinstance(delta, list):
+                messages.extend(m for m in delta if isinstance(m, dict))
+        elif rtype == "response":
+            msg = rec.get("message")
+            if isinstance(msg, dict):
+                messages.append(msg)
+        elif rtype == "error":
+            errors_by_step[rec.get("step", -1)] = rec.get("message", "error")
+
+    # Logs written before null-coercion existed can carry `content: null` on an
+    # assistant tool-call turn; the OpenAI wire format wants a string there.
+    for msg in messages:
+        if msg.get("content") is None:
+            msg["content"] = ""
+
+    # A request is logged write-ahead, *before* the model call. If that call
+    # failed (or the turn is still running), the last assistant message asks for
+    # tools whose results were never logged. Such a conversation is invalid for
+    # the model: every `tool_calls` id must have a matching `tool` message. Two
+    # cases, both repaired by dropping the outgoing assistant's tool_calls:
+    #   * the request is the final message  -> prose + finish_reason=stop
+    #   * later messages exist (the user already sent a new turn) -> native
+    #     "continue" assistant turn, so the pending user message still answers it
+    dangling = _unanswered_tool_call_indexes(messages)
+    if dangling:
+        warnings.append(
+            f"{len(dangling)} assistant request(s) without tool results; dropped their tool calls"
+        )
+        final = len(messages) >= 1 and dangling[-1] == len(messages) - 1
+        for i in dangling:
+            msg = dict(messages[i])
+            msg.pop("tool_calls", None)
+            content = msg.get("content")
+            if final and i == dangling[-1]:
+                msg["role"] = "assistant"
+                msg["content"] = content or "I was about to run a command, but the request failed."
+            elif not (content or "").strip():
+                msg["role"] = "assistant"
+                msg["content"] = "Continuing."
+            messages[i] = msg
+
+    # Group messages into turns, splitting on user messages.
+    turns: list[dict] = []
+    current: dict | None = None
+    steps_by_id: dict[str, dict] = {}
+
+    def _new_turn(user: str) -> dict:
+        return {"user": user, "steps": [], "answer": "", "error": None}
+
+    for msg in messages:
+        role = msg.get("role")
+        if role == "user":
+            if current is not None:
+                turns.append(current)
+            current = _new_turn(msg.get("content") or "")
+            steps_by_id = {}
+        elif role == "assistant":
+            if current is None:
+                current = _new_turn("")  # assistant with no preceding user msg
+            for tc in msg.get("tool_calls") or []:
+                fn = (tc or {}).get("function") or {}
+                step = {
+                    "name": fn.get("name"),
+                    "args": _parse_json_arg(fn.get("arguments"), {}),
+                    "result": None,
+                }
+                tc_id = (tc or {}).get("id")
+                if tc_id:
+                    steps_by_id[tc_id] = step
+                current["steps"].append(step)
+            content = (msg.get("content") or "").strip()
+            if content:
+                current["answer"] = msg.get("content")
+        elif role == "tool":
+            step = steps_by_id.get(msg.get("tool_call_id"))
+            if step is not None:
+                step["result"] = _parse_json_arg(msg.get("content"), {})
+            elif current is not None:
+                warnings.append("orphan tool result ignored")
+        # unknown roles are ignored
+
+    if current is not None:
+        turns.append(current)
+
+    # Attach the most recent error (if any) to the final turn, then mark turns
+    # that produced no answer text as incomplete.
+    if errors_by_step and turns:
+        turns[-1]["error"] = errors_by_step[max(errors_by_step)]
+    for turn in turns:
+        if not turn["answer"] and not turn["error"]:
+            turn["incomplete"] = True
+
+    started = records[0].get("ts") if records else None
+    updated = records[-1].get("ts") if records else None
+
+    return {
+        "session_id": header.get("session") or path.stem,
+        "model": header.get("model"),
+        "started_at": started,
+        "updated_at": updated,
+        "messages": messages,
+        "turns": turns,
+        "warnings": warnings,
+    }
 
 
 async def run_bash(command: str) -> dict:
@@ -407,6 +614,11 @@ async def agent_loop(messages: list[dict], log: SessionLog):
         latency_ms = round((time.monotonic() - started) * 1000)
 
         choice = data["choices"][0]["message"]
+        # Some providers (e.g. DeepSeek reasoner) return `content: null` when the
+        # turn is all tool calls; keep it a string so the echoed-back history is
+        # accepted by stricter APIs.
+        if choice.get("content") is None:
+            choice["content"] = ""
         # Keep the assistant's message in the conversation, including tool_calls.
         convo.append(choice)
 
@@ -496,10 +708,120 @@ async def chat(req: ChatRequest):
     )
 
     # Strip any system message the client echoes back, then add ours exactly once.
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [
-        m for m in req.messages if m.get("role") != "system"
-    ]
+    convo = [m for m in req.messages if m.get("role") != "system"]
+
+    # Defensive: a `tool_calls` message must be followed by its `tool` replies.
+    # Sessions replayed from a log where a turn died mid-flight can violate that
+    # (the replayed `messages` are exactly what the UI echoes back). Drop the
+    # tool_calls a second time here rather than letting history go unanswerable.
+    dangling = _unanswered_tool_call_indexes(convo)
+    for i in dangling:
+        msg = dict(convo[i])
+        msg.pop("tool_calls", None)
+        if msg.get("content") is None:
+            msg["content"] = ""
+        convo[i] = msg
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + convo
     return StreamingResponse(agent_loop(messages, log), media_type="text/event-stream")
+
+
+# Timestamps in a log are ISO-8601 with an offset (``...T15:06:36+00:00``).
+# Compare them as datetimes, never as strings: two equal-looking strings can
+# carry different offsets, and naive-vs-aware comparison would raise anyway.
+
+def _parse_ts(value: Any) -> datetime | None:
+    """Parse one log timestamp into an aware UTC datetime (None if unusable)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:  # treat a missing offset as UTC, as the log intends
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _updated_at(records: list[dict], path: Path) -> datetime:
+    """When the session last did anything: newest record, else file mtime.
+
+    The mtime fallback covers a header-only log (one write, no records with a
+    ``ts`` we can read) so such a session still sorts sensibly instead of
+    being pinned to the epoch. ``st_mtime`` is already real system time.
+    """
+    stamps = [ts for ts in (_parse_ts(r.get("ts")) for r in records) if ts is not None]
+    if stamps:
+        return max(stamps)
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+
+def _session_meta(path: Path) -> dict | None:
+    """Cheap metadata for the session list, or None for an empty/unusable file."""
+    records, _ = read_records(path)
+    if not records:
+        return None
+    user_turns = sum(
+        1
+        for rec in records
+        if rec.get("type") == "request"
+        for m in (rec.get("delta") or [])
+        if isinstance(m, dict) and m.get("role") == "user"
+    )
+    preview = ""
+    for rec in records:
+        if rec.get("type") == "request":
+            for m in rec.get("delta") or []:
+                if isinstance(m, dict) and m.get("role") == "user":
+                    preview = (m.get("content") or "")[:120]
+                    break
+            if preview:
+                break
+    parent = records[0] if records else {}
+    updated = _updated_at(records, path)
+    return {
+        "id": parent.get("session") or path.stem,
+        # `created`/`updated` are real datetimes: the server sorts on them, so
+        # ordering never depends on comparing strings or on every timestamp
+        # sharing one UTC offset. `updated_at` is the same instant rendered for
+        # the UI label (ISO-8601 UTC); clients must not sort on it.
+        "created": _parse_ts(parent.get("ts")),
+        "updated": updated,
+        "created_at": parent.get("ts"),
+        "updated_at": updated.isoformat(),
+        "user_turns": user_turns,
+        "messages": max((int(r.get("total_messages", 0) or 0) for r in records), default=0),
+        "preview": preview,
+    }
+
+
+@app.get("/api/sessions")
+async def list_sessions():
+    """List available session logs, newest first. Read-only; no model calls."""
+    sessions = []
+    for path in LOGS_DIR.glob("*.jsonl"):
+        if not is_safe_session_id(path.stem):
+            continue
+        meta = _session_meta(path)
+        if meta is not None:
+            sessions.append(meta)
+    # The server owns ordering; the client renders in the order it receives.
+    sessions.sort(key=lambda s: s["updated"], reverse=True)
+    return {"sessions": sessions}
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Return one session's rebuilt UI state. Read-only; never calls the model."""
+    if not is_safe_session_id(session_id):
+        raise HTTPException(status_code=404, detail="unknown session")
+    path = LOGS_DIR / f"{session_id}.jsonl"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="unknown session")
+    payload = prepare_session(path)
+    if not payload["messages"]:
+        raise HTTPException(status_code=404, detail="empty session")
+    return payload
 
 
 @app.get("/api/health")
