@@ -66,11 +66,48 @@ You'll see the model run `bash` commands (writing and running a file inside
 `sample-project/`), and the file will actually appear there. Open the folder to
 see it.
 
+## Session logs
+
+Every conversation is tagged with a **session id** (a `uuid`). On the first
+turn the backend mints one and streams it to the browser in a `session` event;
+the browser echoes it back, so a whole conversation lands in a single file:
+
+```
+logs/{session-id}.jsonl
+```
+
+The file is **append-only and write-ahead** (WAL style): one JSON object per
+line, appended one line at a time, never rewritten. Each line is a self-contained
+event with a monotonic `seq`, a UTC `ts`, the `session` id, and a `type`.
+Replay the file top-to-bottom to reconstruct exactly what went to the model.
+
+Crucially, it is **not cumulative** — a `request` line carries only the *new*
+messages since the previous request (its **delta**), never `[m1]`, `[m1, m2]`,
+`[m1, m2, m3]`:
+
+| `type`     | When                                            | Carries                                                        |
+| ---------- | ----------------------------------------------- | -------------------------------------------------------------- |
+| `session`  | once, on a new session file                     | model, base URL, sandbox, config, system prompt, tool schemas  |
+| `request`  | before each model call (write-ahead)            | `delta` (new messages), `step`, `total_messages`               |
+| `response` | after each successful model call                | the assistant message, `usage`, `finish_reason`, `latency_ms`  |
+| `error`    | when a model call fails                         | the error message                                              |
+
+Example (three lines of one file):
+
+```json
+{"seq":0,"ts":"2026-01-15T12:00:00.000000+00:00","session":"9f8e…","type":"session","model":"deepseek-chat","system_prompt":"…","tools":[…]}
+{"seq":1,"ts":"…","session":"9f8e…","type":"request","step":1,"model":"deepseek-chat","delta":[{"role":"user","content":"hi"}],"total_messages":1}
+{"seq":2,"ts":"…","session":"9f8e…","type":"response","step":1,"model":"deepseek-chat","latency_ms":1234,"finish_reason":"stop","message":{"role":"assistant","content":"hello!"},"usage":{…},"total_messages":2}
+```
+
+The `logs/` directory is git-ignored.
+
 ## What's deliberately left out
 
 - No streaming of the model's own tokens (we stream *harness* events instead).
-- No sessions / memory in the backend — the browser sends the full history each
-  time, and the backend returns the updated history in the `answer` event.
+- No server-side conversation memory — the browser still sends the full history
+  each turn (the backend just tags it with a session id and logs it, and
+  returns the updated history in the `answer` event).
 - One tool only. Everything else is "read/write files" done via `bash`.
 
 Add those one at a time once this makes sense.

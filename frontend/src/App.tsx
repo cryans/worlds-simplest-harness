@@ -13,7 +13,7 @@ type BashResult = {
 type Step = { name: string; args: Record<string, unknown>; result?: BashResult };
 type Turn = { user: string; answer: string; steps: Step[]; error?: string };
 
-// One event streamed from the backend. `type` is: status | tool_call | tool_result | answer | error
+// One event streamed from the backend. `type` is: session | status | tool_call | tool_result | answer | error
 type SseEvent = {
   type: string;
   text?: string;
@@ -23,6 +23,7 @@ type SseEvent = {
   content?: string;
   message?: string;
   messages?: Record<string, unknown>[]; // the full OpenAI-format history
+  session_id?: string; // the backend's session id (reused across turns)
 };
 
 // ---------- component --------------------------------------------------------
@@ -35,6 +36,10 @@ export default function App() {
   // The OpenAI-format message history we send back every turn. The backend
   // hands us the authoritative updated list in the final "answer" event.
   const history = useRef<Record<string, unknown>[]>([]);
+
+  // The backend's session id: generated on the first turn, then echoed back
+  // so every later turn appends to the same logs/{session-id}.jsonl file.
+  const sessionIdRef = useRef<string | null>(null);
 
   // Mutable parts of the turn currently being built. We write to refs as
   // events arrive, then copy them into React state so the UI re-renders.
@@ -75,7 +80,10 @@ export default function App() {
       const resp = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history.current }),
+        body: JSON.stringify({
+          messages: history.current,
+          session_id: sessionIdRef.current,
+        }),
       });
       if (!resp.ok) throw new Error(`Backend returned HTTP ${resp.status}`);
       if (!resp.body) throw new Error("No response body");
@@ -101,7 +109,9 @@ export default function App() {
           if (!dataLine) continue;
           const event: SseEvent = JSON.parse(dataLine.slice(6));
 
-          if (event.type === "tool_call") {
+          if (event.type === "session") {
+            sessionIdRef.current = event.session_id ?? null;
+          } else if (event.type === "tool_call") {
             stepsRef.current.push({
               name: event.name ?? "",
               args: event.args ?? {},
@@ -114,6 +124,7 @@ export default function App() {
           } else if (event.type === "answer") {
             answerRef.current = event.content ?? "";
             if (event.messages) history.current = event.messages;
+            if (event.session_id) sessionIdRef.current = event.session_id;
             syncCurrentTurn();
           } else if (event.type === "error") {
             errorRef.current = event.message ?? "Unknown error";

@@ -5,6 +5,7 @@ Run from backend/ with:
 """
 
 import asyncio
+import json
 
 import main
 
@@ -90,3 +91,87 @@ def test_run_bash_times_out(monkeypatch):
 
     assert result["exit_code"] is None
     assert "timed out" in result["stderr"]
+
+
+# --- SessionLog: append-only, write-ahead, delta (not cumulative) ------------
+
+def _read_log(tmp_path, session_id):
+    return [
+        json.loads(line)
+        for line in (tmp_path / f"{session_id}.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def test_session_log_writes_deltas_not_cumulative_history(tmp_path):
+    log = main.SessionLog("delta-test", logs_dir=tmp_path)
+    log.write_session("m", "http://x", "/s", {}, "sys", [])
+
+    # First request logs the full initial delta…
+    log.write_request(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
+        1, "m",
+    )
+    # …and the next request logs ONLY the one new message, not the whole list.
+    log.write_request(
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+        ],
+        2, "m",
+    )
+
+    lines = _read_log(tmp_path, "delta-test")
+    assert [line["type"] for line in lines] == ["session", "request", "request"]
+    assert lines[1]["delta"] == [{"role": "user", "content": "hi"}]
+    assert lines[2]["delta"] == [{"role": "assistant", "content": "yo"}]
+    # seq is strictly monotonic; the envelope is on every line.
+    assert [line["seq"] for line in lines] == [0, 1, 2]
+    assert all(line["session"] == "delta-test" for line in lines)
+    assert all("ts" in line for line in lines)
+
+
+def test_session_log_header_written_once(tmp_path):
+    log = main.SessionLog("header-test", logs_dir=tmp_path)
+    log.write_session("m", "http://x", "/s", {}, "sys", [])
+
+    # A second SessionLog on the same file must not write the header again.
+    again = main.SessionLog("header-test", logs_dir=tmp_path)
+    again.write_session("m", "http://x", "/s", {}, "sys", [])
+
+    lines = _read_log(tmp_path, "header-test")
+    assert sum(1 for line in lines if line["type"] == "session") == 1
+
+
+def test_session_log_resumes_without_re_logging_history(tmp_path):
+    log = main.SessionLog("resume", logs_dir=tmp_path)
+    log.write_session("m", "http://x", "/s", {}, "sys", [])
+    log.write_request(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "a"}],
+        1, "m",
+    )
+    log.write_response({"role": "assistant", "content": "b"}, 1, "m", 10, "stop", {})
+
+    # Simulate the next turn in a fresh process: the browser replays [a, b]
+    # plus a new message "c". Only "c" should be logged.
+    log2 = main.SessionLog("resume", logs_dir=tmp_path)
+    log2.write_request(
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+        ],
+        1, "m",
+    )
+
+    requests = [line for line in _read_log(tmp_path, "resume") if line["type"] == "request"]
+    assert requests[-1]["delta"] == [{"role": "user", "content": "c"}]
+
+
+def test_session_id_sanitizer():
+    assert main.is_safe_session_id("abc-123-ABC")
+    assert not main.is_safe_session_id("")
+    assert not main.is_safe_session_id("../../etc/passwd")
+    assert not main.is_safe_session_id("a b")

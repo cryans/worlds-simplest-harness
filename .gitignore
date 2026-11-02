@@ -20,3 +20,4 @@ frontend/.xdg-cache/
 
 # Sample project
 sample-project*/
+logs/
