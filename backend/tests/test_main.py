@@ -181,7 +181,7 @@ def test_session_id_sanitizer():
 
 import pathlib as _pathlib
 
-_REAL_LOG = _pathlib.Path(__file__).resolve().parent.parent / "logs" / "371c7225-5c73-436a-81b8-70db500c92db.jsonl"
+_REAL_LOG = _pathlib.Path(__file__).resolve().parent / "fixtures" / "371c7225-5c73-436a-81b8-70db500c92db.jsonl"
 
 
 def _write_jsonl(path, records):
