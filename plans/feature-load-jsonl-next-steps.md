@@ -14,7 +14,7 @@ order, and each edge is a real dependency (not a preference) unless marked *soft
 
 ```mermaid
 graph TD
-    F1["1. isolate-test-fixtures<br/><i>no live-file tests</i>"]
+    F1["1. isolate-test-fixtures ✓<br/><i>no live-file tests</i>"]
     F2["2. typed-session-contract<br/><i>Pydantic → OpenAPI → TS</i>"]
     F3["3. extract-session-state-machine<br/><i>split main.py, model tool states</i>"]
     F4["4. harness-guardrails<br/><i>no server side effects, size+lint gates</i>"]
@@ -29,9 +29,11 @@ graph TD
     F3 --> F4
     F2 --> F6
 
+    classDef done fill:#e3f2fd,stroke:#1565c0
     classDef ready fill:#e8f5e9,stroke:#2e7d32
     classDef hold fill:#fff3e0,stroke:#ef6c00
-    class F1 ready
+    class F1 done
+    class F2 ready
     class F5,F6 hold
 ```
 
@@ -50,17 +52,21 @@ time after it; it is not on the critical path.
 
 ---
 
-## 1. `isolate-test-fixtures`
+## 1. `isolate-test-fixtures` — **done**
 
-**Why:** `test_prepare_session_on_real_log` reads `../logs/371c7225….jsonl`, which is gitignored.
-On a clean clone it errors; deleting that session breaks the suite.
+**Why:** `test_prepare_session_on_real_log` read `../logs/371c7225….jsonl`, which is gitignored.
+On a clean clone it failed *quietly* (`assert 0 == 9` — a missing file yields empty turns, not an
+error); deleting that session broke the suite.
 
-- [ ] Copy one frozen log to `backend/tests/fixtures/` with a short README saying it is frozen
-- [ ] Point `_REAL_LOG` at the fixture; assert the same 9 turns and no warnings
-- [ ] Add a test that **fails** if any test references `logs/` or another gitignored path
-- [ ] Move `test_main.py` → `backend/tests/test_*.py` as part of this (tests dir already implied)
+- [x] Copy one frozen log to `backend/tests/fixtures/` with a short README saying it is frozen
+- [x] Point `_REAL_LOG` at the fixture; assert the same 9 turns and no warnings
+- [x] Add a test that **fails** if any test references `logs/` or another gitignored path
+- [x] Move `test_main.py` → `backend/tests/test_*.py` as part of this (tests dir already implied)
 
-**Verify:** `git stash -u && pytest -q` green on a tree with no `logs/` directory.
+**Verify:** green on a tree with no `logs/` directory. ✅ `uv run pytest -q` → 32 passed with `logs/`
+renamed away. The guard is an autouse fixture in `backend/tests/conftest.py` (pathlib `open`/
+`read_text`/`exists`/`glob`), not a source grep; it collects violations and fails at teardown.
+See `feature-isolate-test-fixtures-retro.md`.
 
 ## 2. `typed-session-contract`
 
