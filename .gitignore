@@ -1,6 +1,8 @@
 # Python
 backend/.venv/
 backend/.uv-cache/
+# uv.lock is generated; not tracked (deps are ==-pinned in pyproject.toml)
+backend/uv.lock
 __pycache__/
 *.pyc
 .pytest_cache/

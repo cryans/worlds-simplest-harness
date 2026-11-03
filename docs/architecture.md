@@ -12,7 +12,7 @@ Everything funnels through **one endpoint**: `POST /api/chat`.
 
 ## The agent loop
 
-This is the single idea that makes it a *harness*. In `backend/main.py`,
+This is the single idea that makes it a *harness*. In `backend/src/wsh/agent/loop.py`,
 `agent_loop()` repeats:
 
 1. **Ask the model** — send the conversation plus the list of tools (`TOOLS`).

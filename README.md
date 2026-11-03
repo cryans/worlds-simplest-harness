@@ -12,8 +12,9 @@ worlds-simplest-harness/
 ├── frontend/         React + Vite (TypeScript) web UI
 │   └── src/App.tsx   the whole UI: a chat box + a transcript
 ├── backend/
-│   ├── main.py       FastAPI app + the "agent loop" + the bash tool
-│   └── requirements.txt
+│   ├── main.py       thin entrypoint: `from wsh.api.app import app`
+│   ├── pyproject.toml  deps + build (uv)
+│   └── src/wsh/      config, models, tools, session, agent, api
 ├── sample-project/   THE sandbox. All bash runs in here.
 ├── .env.example      copy → backend/.env and add your key
 └── README.md         you are here
@@ -21,7 +22,7 @@ worlds-simplest-harness/
 
 ### How the agent loop works
 
-This is the one idea that matters. `backend/main.py` does this, in a loop:
+This is the one idea that matters. The backend does this, in a loop (in `backend/src/wsh/agent/loop.py`):
 
 1. Send the conversation to the model (DeepSeek), telling it about one tool: `bash`.
 2. If the model replies in words → done, stream the answer to the browser.
@@ -40,10 +41,8 @@ Each step is streamed to the browser as a Server-Sent Event (`status`,
 cp .env.example backend/.env      # then edit it: put in your DEEPSEEK_API_KEY
 
 cd backend
-uv venv                           # create a virtualenv (uv is already installed)
-source .venv/bin/activate
-uv pip install -r requirements.txt
-uvicorn main:app --reload --port 8010
+uv sync                           # install deps + the `wsh` package (uv is already installed)
+uv run uvicorn main:app --reload --port 8010
 ```
 
 Check it's alive: http://localhost:8010/api/health
