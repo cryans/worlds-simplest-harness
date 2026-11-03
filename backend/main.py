@@ -33,14 +33,15 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Annotated, Any, Literal, Union, get_type_hints
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, TypeAdapter, create_model
 
 # --- config ---------------------------------------------------------------
 
@@ -148,6 +149,130 @@ class ChatRequest(BaseModel):
 
     messages: list[dict] = []
     session_id: str | None = None
+
+
+# --- API response models ----------------------------------------------------
+# One source of truth for what the API returns (Pydantic -> OpenAPI -> TS).
+# Field names and types are frozen: this is a type pass, not a wire-format change.
+
+ToolResult = dict | str  # bash returns a dict; manage_plan returns a str
+
+
+class ToolStep(BaseModel):
+    """One tool invocation inside a turn. Shared vocabulary with the log's
+    `response.message.tool_calls` (the log side is typed in a later feature)."""
+
+    name: str
+    args: dict = {}
+    # `result` is what the tool returned: `bash` returns a dict
+    # (exit_code/stdout/stderr), `manage_plan` returns a string.
+    result: ToolResult | None = None
+
+
+class SessionTurn(BaseModel):
+    """One user message and everything the model did in response."""
+
+    user: str
+    steps: list[ToolStep] = []
+    answer: str = ""
+    error: str | None = None
+    incomplete: bool = False
+
+
+class SessionMeta(BaseModel):
+    """Cheap metadata for the session list, derived (not stored) from a log."""
+
+    id: str
+    created: datetime | None = None
+    updated: datetime | None = None
+    created_at: str | None = None
+    updated_at: str
+    user_turns: int
+    messages: int
+    preview: str = ""
+
+
+class SessionList(BaseModel):
+    """Body of `GET /api/sessions`."""
+
+    sessions: list[SessionMeta]
+
+
+class SessionPayload(BaseModel):
+    """Body of `GET /api/sessions/{id}` and the return of `prepare_session`."""
+
+    session_id: str
+    model: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    messages: list[dict] = []
+    turns: list[SessionTurn] = []
+    warnings: list[str] = []
+
+
+# --- SSE event union ---------------------------------------------------------
+# The `/api/chat` body is a stream, so these are *not* a route response_model.
+# They describe what `sse()` emits; the contract is reflected into OpenAPI by
+# `custom_openapi()` below (one generation path, one diff check).
+
+
+class SessionEvent(BaseModel):
+    type: Literal["session"]
+    session_id: str
+
+
+class StatusEvent(BaseModel):
+    type: Literal["status"]
+    text: str
+
+
+class ToolCallEvent(BaseModel):
+    type: Literal["tool_call"]
+    name: str
+    args: dict = {}
+
+
+class ToolResultEvent(BaseModel):
+    type: Literal["tool_result"]
+    name: str
+    result: ToolResult
+
+
+class AnswerEvent(BaseModel):
+    type: Literal["answer"]
+    session_id: str
+    content: str = ""
+    messages: list[dict] = []
+
+
+class ErrorEvent(BaseModel):
+    type: Literal["error"]
+    message: str
+
+
+SseEvent = Annotated[
+    Union[SessionEvent, StatusEvent, ToolCallEvent, ToolResultEvent, AnswerEvent, ErrorEvent],
+    Field(discriminator="type"),
+]
+
+
+def custom_openapi():
+    """FastAPI can't discover SseEvent from a route (the chat body is a stream),
+    so reflect it into `components.schemas` under a stable name. One generation
+    path: the same `/openapi.json` that feeds `openapi-typescript`."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+    comps = schema.setdefault("components", {}).setdefault("schemas", {})
+    js = TypeAdapter(SseEvent).json_schema(ref_template="#/components/schemas/{model}")
+    for name, member in js.pop("$defs", {}).items():
+        comps[name] = member
+    comps["SseEvent"] = js
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
 
 
 def sse(event: str, data: dict) -> str:
@@ -346,7 +471,7 @@ def _unanswered_tool_call_indexes(messages: list[dict]) -> list[int]:
     return dangling
 
 
-def prepare_session(path: Path) -> dict:
+def prepare_session(path: Path) -> SessionPayload:
     """Rebuild UI-only state from a session log. Read-only; never calls the model.
 
     Concatenates every ``request.delta`` and ``response.message`` in order to
@@ -468,15 +593,15 @@ def prepare_session(path: Path) -> dict:
     started = records[0].get("ts") if records else None
     updated = records[-1].get("ts") if records else None
 
-    return {
-        "session_id": header.get("session") or path.stem,
-        "model": header.get("model"),
-        "started_at": started,
-        "updated_at": updated,
-        "messages": messages,
-        "turns": turns,
-        "warnings": warnings,
-    }
+    return SessionPayload(
+        session_id=header.get("session") or path.stem,
+        model=header.get("model"),
+        started_at=started,
+        updated_at=updated,
+        messages=messages,
+        turns=turns,
+        warnings=warnings,
+    )
 
 
 async def run_bash(command: str) -> dict:
@@ -795,7 +920,7 @@ def _session_meta(path: Path) -> dict | None:
     }
 
 
-@app.get("/api/sessions")
+@app.get("/api/sessions", response_model=SessionList)
 async def list_sessions():
     """List available session logs, newest first. Read-only; no model calls."""
     sessions = []
@@ -810,7 +935,7 @@ async def list_sessions():
     return {"sessions": sessions}
 
 
-@app.get("/api/sessions/{session_id}")
+@app.get("/api/sessions/{session_id}", response_model=SessionPayload)
 async def get_session(session_id: str):
     """Return one session's rebuilt UI state. Read-only; never calls the model."""
     if not is_safe_session_id(session_id):
@@ -819,7 +944,7 @@ async def get_session(session_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="unknown session")
     payload = prepare_session(path)
-    if not payload["messages"]:
+    if not payload.messages:
         raise HTTPException(status_code=404, detail="empty session")
     return payload
 

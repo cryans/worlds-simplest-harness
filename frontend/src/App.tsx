@@ -2,54 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-// ---------- types -----------------------------------------------------------
+// ---------- types (aliases into the generated contract) -------------------
 
-type BashResult = {
-  exit_code?: number | null;
-  stdout?: string;
-  stderr?: string;
-  error?: string;
-};
-type Step = { name: string; args: Record<string, unknown>; result?: BashResult };
-type Turn = {
-  user: string;
-  answer: string;
-  steps: Step[];
-  error?: string | null;
-  incomplete?: boolean;
-};
+import type { components } from "./api-types";
 
-// Ordered by the backend (newest first); the UI renders as received and never
-// sorts. `updated_at` is only used to format the label.
-type SessionMeta = {
-  id: string;
-  created_at?: string;
-  updated_at?: string;
-  user_turns: number;
-  messages: number;
-  preview?: string;
-};
-
-type SessionPayload = {
-  session_id: string;
-  model?: string;
-  started_at?: string;
-  messages: Record<string, unknown>[];
-  turns: Turn[];
-  warnings: string[];
-};
-
-type SseEvent = {
-  type: string;
-  text?: string;
-  name?: string;
-  args?: Record<string, unknown>;
-  result?: BashResult;
-  content?: string;
-  message?: string;
-  messages?: Record<string, unknown>[];
-  session_id?: string;
-};
+type SessionMeta = components["schemas"]["SessionMeta"];
+type SessionList = components["schemas"]["SessionList"];
+type SessionPayload = components["schemas"]["SessionPayload"];
+type SessionTurn = components["schemas"]["SessionTurn"];
+type ToolStep = components["schemas"]["ToolStep"];
+type SseEvent = components["schemas"]["SseEvent"];
 
 // ---------- helpers ---------------------------------------------------------
 
@@ -72,7 +34,7 @@ function sessionParam(): string | null {
 // ---------- component --------------------------------------------------------
 
 export default function App() {
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -85,7 +47,7 @@ export default function App() {
   const history = useRef<Record<string, unknown>[]>([]);
   const sessionIdRef = useRef<string | null>(null);
 
-  const stepsRef = useRef<Step[]>([]);
+  const stepsRef = useRef<ToolStep[]>([]);
   const answerRef = useRef("");
   const errorRef = useRef<string | undefined>(undefined);
 
@@ -101,6 +63,7 @@ export default function App() {
         answer: answerRef.current,
         steps: [...stepsRef.current],
         error: errorRef.current,
+        incomplete: last.incomplete,
       };
       return next;
     });
@@ -109,7 +72,10 @@ export default function App() {
   async function refreshSessions() {
     try {
       const resp = await fetch("/api/sessions");
-      if (resp.ok) setSessions((await resp.json()).sessions ?? []);
+      if (resp.ok) {
+        const data: SessionList = await resp.json();
+        setSessions(data.sessions ?? []);
+      }
     } catch {
       /* non-fatal: leave the list as-is */
     }
@@ -166,7 +132,7 @@ export default function App() {
     answerRef.current = "";
     errorRef.current = undefined;
 
-    setTurns((prev) => [...prev, { user: text, answer: "", steps: [] }]);
+    setTurns((prev) => [...prev, { user: text, answer: "", steps: [], incomplete: false }]);
     history.current.push({ role: "user", content: text });
 
     try {
@@ -313,7 +279,7 @@ export default function App() {
 
 // ---------- one turn of the conversation -------------------------------------
 
-function TurnView({ turn }: { turn: Turn }) {
+function TurnView({ turn }: { turn: SessionTurn }) {
   return (
     <div className="turn">
       <div className="bubble user">
@@ -329,15 +295,17 @@ function TurnView({ turn }: { turn: Turn }) {
           </div>
           {step.result && (
             <pre className="output">
-              {step.result.error ? (
-                <span className="stderr">{step.result.error}</span>
+              {typeof step.result === "string" ? (
+                step.result
+              ) : step.result.error ? (
+                <span className="stderr">{String(step.result.error)}</span>
               ) : (
                 <>
-                  {step.result.stdout}
+                  {String(step.result.stdout ?? "")}
                   {step.result.stderr && (
-                    <span className="stderr">{step.result.stderr}</span>
+                    <span className="stderr">{String(step.result.stderr)}</span>
                   )}
-                  <span className="exit">[exit {step.result.exit_code}]</span>
+                  <span className="exit">[exit {String(step.result.exit_code ?? "")}]</span>
                 </>
               )}
             </pre>

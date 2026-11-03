@@ -21,3 +21,6 @@ frontend/.xdg-cache/
 # Sample project
 sample-project*/
 logs/
+
+# Generated OpenAPI intermediate (recreated by `pnpm gen:api`)
+frontend/schema.json

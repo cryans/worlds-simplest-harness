@@ -15,7 +15,7 @@ order, and each edge is a real dependency (not a preference) unless marked *soft
 ```mermaid
 graph TD
     F1["1. isolate-test-fixtures ✓<br/><i>no live-file tests</i>"]
-    F2["2. typed-session-contract<br/><i>Pydantic → OpenAPI → TS</i>"]
+    F2["2. typed-session-contract ✓<br/><i>Pydantic → OpenAPI → TS</i>"]
     F3["3. extract-session-state-machine<br/><i>split main.py, model tool states</i>"]
     F4["4. harness-guardrails<br/><i>no server side effects, size+lint gates</i>"]
     F5["5. document-sdlc<br/><i>write down the workflow</i>"]
@@ -32,8 +32,8 @@ graph TD
     classDef done fill:#e3f2fd,stroke:#1565c0
     classDef ready fill:#e8f5e9,stroke:#2e7d32
     classDef hold fill:#fff3e0,stroke:#ef6c00
-    class F1 done
-    class F2 ready
+    class F1,F2 done
+    class F3 ready
     class F5,F6 hold
 ```
 
@@ -75,15 +75,16 @@ sync by hand. The incident that opened this retro was a *shape* disagreement not
 
 **Source of truth: Pydantic → OpenAPI → TypeScript.** Not the reverse.
 
-- [ ] `SessionTurn`, `SessionPayload`, `SessionMeta`, `SseEvent` as Pydantic models (discriminated
+- [x] `SessionTurn`, `SessionPayload`, `SessionMeta`, `SseEvent` as Pydantic models (discriminated
       union on `type` for SSE); endpoint return types annotated with them
-- [ ] `prepare_session` returns the model, not `dict`; existing tests assert on attributes
-- [ ] Generate `frontend/src/api-types.ts` from the OpenAPI schema (`openapi-typescript`)
-- [ ] `App.tsx` imports its types from the generated file instead of hand-written `type`s
-- [ ] CI check: regenerate and `git diff --exit-code` (this is the automatic guardrail)
+- [x] `prepare_session` returns the model, not `dict`; existing tests assert on attributes
+- [x] Generate `frontend/src/api-types.ts` from the OpenAPI schema (`openapi-typescript`)
+- [x] `App.tsx` imports its types from the generated file instead of hand-written `type`s
+- [x] CI check: regenerate and `git diff --exit-code` (this is the automatic guardrail)
 
-**Verify:** `pnpm build` green with zero hand-written API types in `App.tsx`; the CI diff step fails
-when a Pydantic field is renamed without regenerating.
+**Verify:** ✅ `pnpm build` green with zero hand-written API types in `App.tsx`; the CI diff step
+fails when a Pydantic field is renamed without regenerating. See
+`feature-typed-session-contract-retro.md`.
 
 ## 3. `extract-session-state-machine`
 
