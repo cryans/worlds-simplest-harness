@@ -2,7 +2,7 @@
 branch: "typed-session-contract"
 status: "proposed"
 references:
-  - "plans/feature-load-jsonl-next-steps.md"
+  - "plans/next-steps.md"
 ---
 
 # Typed session contract — requirements

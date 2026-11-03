@@ -7,7 +7,7 @@ references:
   - "plans/feature-load-jsonl-requirements.md"
   - "plans/feature-load-jsonl-design.md"
   - "plans/feature-load-jsonl-plan.md"
-  - "plans/feature-load-jsonl-next-steps.md"
+  - "plans/next-steps.md"
 ---
 
 # Retrospective — Load chat sessions from JSONL logs
@@ -73,7 +73,7 @@ same class of bug is predictable rather than merely survivable.
 
 - **Structure first.** The workflow itself worked; keep it. The failure mode was not the process but
   the *absence of guardrails around it* — a process without enforcement degrades quietly.
-- **Planned guardrails** (each becomes a follow-up feature, see `feature-load-jsonl-next-steps.md`):
+- **Planned guardrails** (each becomes a follow-up feature, see `next-steps.md`):
   - tool calls may not start/stop long-lived servers — enforced by the harness, not by memory;
   - tests may not read gitignored runtime state — enforced by fixtures;
   - schema agreement between Pydantic and the UI — enforced by generated types + a CI diff check;

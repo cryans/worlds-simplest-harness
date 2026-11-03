@@ -3,7 +3,7 @@ branch: "isolate-test-fixtures"
 feature: "isolate-test-fixtures"
 status: "proposed"
 references:
-  - "plans/feature-load-jsonl-next-steps.md"
+  - "plans/next-steps.md"
   - "plans/feature-load-jsonl-retro.md"
 ---
 

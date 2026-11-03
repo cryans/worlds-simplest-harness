@@ -3,7 +3,7 @@ schema: "feature-typed-session-contract-design"
 branch: "typed-session-contract"
 references:
   - doc: "feature-typed-session-contract-requirements.md"
-  - doc: "feature-load-jsonl-next-steps.md"
+  - doc: "next-steps.md"
 ---
 
 # Typed session contract — design
