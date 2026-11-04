@@ -122,3 +122,4 @@ All via environment variables (or `backend/.env`):
 | `DEEPSEEK_MODEL`    | `deepseek-chat`           | Model name                          |
 | `MAX_STEPS`         | `10`                      | Max model↔tool round-trips per turn |
 | `BASH_TIMEOUT`      | `30`                      | Seconds before a bash command is killed |
+| `MODEL_MAX_RETRIES` | `2`                       | Retries per model call on 503 / connection errors |

@@ -1,15 +1,36 @@
 """The agent loop: ask the model, run tools, repeat, streaming SSE."""
 
+import asyncio
 import json
 import time
 
 import httpx
 
 from wsh.agent.client import call_model
-from wsh.config import MAX_STEPS, MODEL
+from wsh.config import MAX_STEPS, MODEL, MODEL_MAX_RETRIES
 from wsh.session import SessionLog
 from wsh.sse import sse
 from wsh.tools import TOOL_REGISTRY, call_tool
+
+RETRY_BACKOFF_S = 1.0  # seconds between retry attempts (exponential/jitter out of scope)
+
+
+def _retryable(exc: BaseException) -> bool:
+    """True for transient failures worth retrying: 503 and transport errors."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 503
+    if isinstance(exc, (httpx.DecodingError, httpx.TooManyRedirects)):
+        return False
+    return isinstance(exc, httpx.RequestError)
+
+
+def _error_message(exc: BaseException) -> str:
+    """A model-call error message that names the exception type and is never empty."""
+    name = type(exc).__name__
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"Model error ({name}): {exc.response.status_code} {exc.response.text}"
+    detail = str(exc)
+    return f"Could not reach the model ({name}): {detail or 'no detail'}"
 
 
 async def agent_loop(messages: list[dict], log: SessionLog):
@@ -31,7 +52,8 @@ async def agent_loop(messages: list[dict], log: SessionLog):
     # Tell the browser which session this is, so it can reuse the id next turn.
     yield sse("session", {"session_id": log.session_id})
 
-    for step in range(1, MAX_STEPS + 1):
+    for _ in range(MAX_STEPS):
+        step = log.next_step()
         yield sse("status", {"text": "asking the model…"})
 
         # WAL: write the (delta-only) request BEFORE hitting the model, so a
@@ -39,18 +61,21 @@ async def agent_loop(messages: list[dict], log: SessionLog):
         log.write_request(convo, step, MODEL)
         started = time.monotonic()
 
-        try:
-            data = await call_model(convo)
-        except httpx.HTTPStatusError as e:
-            message = f"Model error: {e.response.status_code} {e.response.text}"
-            log.write_error(message, step)
-            yield sse("error", {"message": message})
-            return
-        except Exception as e:  # network failure, bad key, etc.
-            message = f"Could not reach the model: {e}"
-            log.write_error(message, step)
-            yield sse("error", {"message": message})
-            return
+        attempts = 0
+        while True:
+            try:
+                data = await call_model(convo)
+                break
+            except Exception as e:
+                if _retryable(e) and attempts < MODEL_MAX_RETRIES:
+                    attempts += 1
+                    yield sse("status", {"text": f"retrying ({attempts}/{MODEL_MAX_RETRIES})…"})
+                    await asyncio.sleep(RETRY_BACKOFF_S)
+                    continue
+                message = _error_message(e)
+                log.write_error(message, step)
+                yield sse("error", {"message": message})
+                return
 
         latency_ms = round((time.monotonic() - started) * 1000)
 

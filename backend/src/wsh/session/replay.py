@@ -90,7 +90,8 @@ def prepare_session(path: Path) -> SessionPayload:
 
     header: dict = {}
     messages: list[dict] = []
-    errors_by_step: dict[int, str] = {}
+    errors_by_turn: dict[int, str] = {}
+    turn_index = -1
 
     for rec in records:
         rtype = rec.get("type")
@@ -99,13 +100,18 @@ def prepare_session(path: Path) -> SessionPayload:
         elif rtype == "request":
             delta = rec.get("delta") or []
             if isinstance(delta, list):
-                messages.extend(m for m in delta if isinstance(m, dict))
+                for m in delta:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("role") == "user":
+                        turn_index += 1
+                    messages.append(m)
         elif rtype == "response":
             msg = rec.get("message")
             if isinstance(msg, dict):
                 messages.append(msg)
         elif rtype == "error":
-            errors_by_step[rec.get("step", -1)] = rec.get("message", "error")
+            errors_by_turn[turn_index] = rec.get("message", "error")
 
     # Logs written before null-coercion existed can carry `content: null` on an
     # assistant tool-call turn; the OpenAI wire format wants a string there.
@@ -182,10 +188,11 @@ def prepare_session(path: Path) -> SessionPayload:
     if current is not None:
         turns.append(current)
 
-    # Attach the most recent error (if any) to the final turn, then mark turns
-    # that produced no answer text as incomplete.
-    if errors_by_step and turns:
-        turns[-1]["error"] = errors_by_step[max(errors_by_step)]
+    # Attach each error to the turn that produced it (by turn boundary), then
+    # mark turns that produced no answer text as incomplete.
+    for i, turn in enumerate(turns):
+        if i in errors_by_turn:
+            turn["error"] = errors_by_turn[i]
     for turn in turns:
         if not turn["answer"] and not turn["error"]:
             turn["incomplete"] = True

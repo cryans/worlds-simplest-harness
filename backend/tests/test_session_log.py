@@ -92,3 +92,16 @@ def test_session_log_self_heals_cursor_after_lost_turn(tmp_path):
             if l.strip()]
     reqs = [r for r in reqs if r.get("type") == "request"]
     assert reqs[-1]["delta"] == [{"role": "user", "content": "2"}]
+
+
+def test_next_step_resumes_across_reopen(tmp_path):
+    log = SessionLog("steps", logs_dir=tmp_path)
+    log.write_session("m", "http://x", "/s", {}, "sys", [])
+    log.write_request([{"role": "system", "content": "sys"},
+                       {"role": "user", "content": "hi"}], 1, "m")
+    log.write_request([{"role": "system", "content": "sys"},
+                       {"role": "user", "content": "hi"},
+                       {"role": "assistant", "content": "yo"}], 2, "m")
+
+    # max(step) was 2, so a fresh SessionLog resumes at 3 — no per-turn reset.
+    assert SessionLog("steps", logs_dir=tmp_path).next_step() == 3

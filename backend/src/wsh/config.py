@@ -16,6 +16,7 @@ BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "100"))  # how many model<->tool round-trips
 BASH_TIMEOUT = int(os.environ.get("BASH_TIMEOUT", "30"))  # seconds per bash command
+MODEL_MAX_RETRIES = int(os.environ.get("MODEL_MAX_RETRIES", "2"))  # retries per model call
 
 # The sandbox folder. It lives at the repo ROOT, next to backend/ and frontend/.
 # `config.py` sits at backend/src/wsh/, so three parents up is the repo root.

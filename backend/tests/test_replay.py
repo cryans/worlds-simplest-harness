@@ -134,3 +134,19 @@ def test_prepare_session_null_content_becomes_string(tmp_path):
     path = _write_jsonl(tmp_path / "s1.jsonl", recs)
     msgs = prepare_session(path).messages
     assert all(isinstance(m.get("content"), str) for m in msgs)
+
+
+def test_error_attaches_to_correct_turn(tmp_path):
+    hdr = {"seq": 0, "type": "session", "session": "s1", "model": "m", "ts": "t0"}
+    req1 = {"seq": 1, "type": "request", "step": 1, "total_messages": 1,
+            "delta": [{"role": "user", "content": "hi"}]}
+    err1 = {"seq": 2, "type": "error", "step": 1, "message": "boom"}
+    req2 = {"seq": 3, "type": "request", "step": 2, "total_messages": 2,
+            "delta": [{"role": "user", "content": "hi2"}]}
+    res2 = {"seq": 4, "type": "response", "step": 2, "total_messages": 3,
+            "message": {"role": "assistant", "content": "hello"}}
+    path = _write_jsonl(tmp_path / "s1.jsonl", [hdr, req1, err1, req2, res2])
+
+    turns = prepare_session(path).turns
+    assert turns[0].error == "boom"
+    assert turns[1].error is None

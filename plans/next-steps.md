@@ -9,28 +9,24 @@ one-liners; active items get one "why". The full backlog lives elsewhere.
 
 ## Order
 
-1. `model-failure-handling`
-2. `session-domain`
-3. `sample-project-rework`
-4. `harness-guardrails`
-5. `document-sdlc`
-6. `mermaid-validation`
+1. `session-domain`
+2. `sample-project-rework`
+3. `harness-guardrails`
+4. `document-sdlc`
+5. `mermaid-validation`
 
 ## Done
 
 - `isolate-test-fixtures`
 - `typed-session-contract`
 - `backend-refactor`
+- `model-failure-handling`
 
 ## Active
 
-### model-failure-handling — next
-- Retry on 503 / connection errors; error messages include `type(e).__name__` (never empty).
-- Why: DeepSeek failures kill turns with no recovery.
-
 ### session-domain
 - Turn state machine: `idle → awaiting_user → tool_calls_pending → tool_results → answered | incomplete | errored`.
-- Per-turn error attachment; settle `step` semantics (errors keyed by `step` collide across turns — see `4a3bd8de`).
+- Per-turn error attachment + `step` semantics landed in `model-failure-handling`. Remaining edge: `prepare_session` keys errors by turn boundary, so a leading assistant turn (no preceding `user` message) misaligns them, and an error before any user message is dropped — the harness never writes such a log, but the state machine should make attribution structural.
 - Why: the dangling-tool-calls repair exists because tool-calling isn't a state.
 
 ### sample-project-rework

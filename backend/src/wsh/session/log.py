@@ -27,19 +27,21 @@ class SessionLog:
         self.session_id = session_id
         logs_dir.mkdir(parents=True, exist_ok=True)
         self.path = logs_dir / f"{session_id}.jsonl"
-        self._seq, self._logged = self._resume()
+        self._seq, self._logged, self._step = self._resume()
 
     def _resume(self) -> tuple[int, int]:
         """Scan an existing file to continue where it left off.
 
-        Returns ``(next_seq, logged_messages)``. ``logged_messages`` is the
-        highest ``total_messages`` already written, so a history replayed by
-        the browser is never logged twice. Torn/partial trailing lines are
-        ignored (they are the cost of a crash mid-append, which we don't try
-        to repair).
+        Returns ``(next_seq, logged_messages, next_step)``. ``logged_messages``
+        is the highest ``total_messages`` already written, so a history replayed
+        by the browser is never logged twice. ``next_step`` is the next round-trip
+        number (``max(step)+1``), so steps never reset between turns. Torn/partial
+        trailing lines are ignored (they are the cost of a crash mid-append, which
+        we don't try to repair).
         """
         next_seq = 0
         logged = 0
+        step = 0
         if self.path.exists():
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
@@ -51,7 +53,19 @@ class SessionLog:
                     continue
                 next_seq = max(next_seq, int(rec.get("seq", -1)) + 1)
                 logged = max(logged, int(rec.get("total_messages", 0) or 0))
-        return next_seq, logged
+                step = max(step, int(rec.get("step", 0) or 0))
+        return next_seq, logged, step + 1
+
+    def next_step(self) -> int:
+        """The next round-trip number for this session, then increment.
+
+        The loop calls this once per model round-trip so the ``step`` written to
+        every request/response/error line is monotonic across the whole session —
+        Turn 2's first step continues from Turn 1's last, instead of resetting.
+        """
+        step = self._step
+        self._step += 1
+        return step
 
     def _append(self, record: dict) -> None:
         """Stamp the envelope and append one line. Never rewrites earlier lines."""
