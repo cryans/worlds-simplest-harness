@@ -27,8 +27,8 @@ one-liners; active items get one "why". The full backlog lives elsewhere.
 ## Active
 
 ### true-sandbox
-- Smoke-mode `bash` under `bwrap`: allowlist mounts, `/workspace` model path, no parser.
-- Why: smoke mode is currently only a cwd change; the kernel can enforce the boundary.
+- Plugin-boundary smoke sandbox: smoke code in its own modules; main loop untouched; `bash` under `bwrap`.
+- Why: smoke mode is currently only a cwd change, and it must not pollute the event loop.
 
 ### sample-project-rework
 - Normal mode still uses repo-root `sample-project/`; the default sandbox is not env-configurable.
