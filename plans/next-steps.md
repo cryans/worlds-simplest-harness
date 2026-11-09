@@ -5,7 +5,8 @@ status: "active"
 # Next steps
 
 A working list of what to pick up next, kept deliberately short. Done items stay as
-one-liners; active items get one "why". The full backlog lives elsewhere.
+one-liners; active items get one "why". The full backlog lives in
+[`backlog.md`](backlog.md).
 
 ## Order
 
