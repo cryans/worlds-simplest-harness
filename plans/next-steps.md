@@ -9,13 +9,15 @@ one-liners; active items get one "why". The full backlog lives elsewhere.
 
 ## Order
 
-1. `sample-project-rework`
-2. `harness-guardrails`
-3. `document-sdlc`
-4. `mermaid-validation`
+1. `true-sandbox`
+2. `sample-project-rework`
+3. `harness-guardrails`
+4. `document-sdlc`
+5. `mermaid-validation`
 
 ## Done
 
+- `sample-project-smoke-test`
 - `isolate-test-fixtures`
 - `typed-session-contract`
 - `backend-refactor`
@@ -24,9 +26,13 @@ one-liners; active items get one "why". The full backlog lives elsewhere.
 
 ## Active
 
+### true-sandbox
+- Smoke-mode `bash` under `bwrap`: allowlist mounts, `/workspace` model path, no parser.
+- Why: smoke mode is currently only a cwd change; the kernel can enforce the boundary.
+
 ### sample-project-rework
-- Env-configurable sandbox path, outside the repo.
-- Why: the sandbox is gitignored but coupled to the repo root; it pollutes and diverges.
+- Normal mode still uses repo-root `sample-project/`; the default sandbox is not env-configurable.
+- Why: smoke mode is isolated, but ordinary runs remain coupled to the repo root.
 
 ### harness-guardrails
 - ruff (size/complexity) + mypy + pre-commit/CI; no server-starting tool calls.
