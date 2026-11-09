@@ -2,15 +2,17 @@
 
 import asyncio
 
-from wsh.config import BASH_TIMEOUT, SAMPLE_PROJECT
+from wsh.config import BASH_TIMEOUT, get_current_sandbox
 from wsh.tools.registry import tool
 
 
 async def run_bash(command: str) -> dict:
-    """Run a shell command inside sample-project/ and capture its output."""
+    """Run a shell command inside the current session sandbox and capture its output."""
+    sandbox = get_current_sandbox()
+    sandbox.mkdir(parents=True, exist_ok=True)
     proc = await asyncio.create_subprocess_shell(
         command,
-        cwd=SAMPLE_PROJECT,
+        cwd=sandbox,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

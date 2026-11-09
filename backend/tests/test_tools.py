@@ -3,7 +3,7 @@
 import asyncio
 
 import wsh.tools.bash
-from wsh.config import SAMPLE_PROJECT
+from wsh.config import SAMPLE_PROJECT, reset_current_sandbox, set_current_sandbox
 from wsh.tools import TOOLS, TOOL_REGISTRY, call_tool, run_bash, tool
 
 
@@ -54,22 +54,38 @@ def test_call_tool_sync_and_async():
     assert asyncio.run(call_tool(triple, {"x": 14})) == 42
 
 
-def test_run_bash_cwd_and_stdout():
+def test_run_bash_cwd_and_stdout(tmp_path, monkeypatch):
+    monkeypatch.setattr(wsh.tools.bash, "get_current_sandbox", lambda: tmp_path)
     result = asyncio.run(run_bash("pwd && echo hello"))
 
     assert result["exit_code"] == 0
-    assert str(SAMPLE_PROJECT) in result["stdout"]
+    assert str(tmp_path) in result["stdout"]
     assert result["stdout"].strip().splitlines()[-1] == "hello"
 
 
-def test_run_bash_reports_exit_code():
+def test_run_bash_reports_exit_code(tmp_path, monkeypatch):
+    monkeypatch.setattr(wsh.tools.bash, "get_current_sandbox", lambda: tmp_path)
     result = asyncio.run(run_bash("exit 3"))
     assert result["exit_code"] == 3
 
 
-def test_run_bash_times_out(monkeypatch):
+def test_run_bash_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(wsh.tools.bash, "BASH_TIMEOUT", 1)
+    monkeypatch.setattr(wsh.tools.bash, "get_current_sandbox", lambda: tmp_path)
     result = asyncio.run(run_bash("sleep 3"))
 
     assert result["exit_code"] is None
     assert "timed out" in result["stderr"]
+
+
+def test_run_bash_uses_current_sandbox(tmp_path):
+    async def scenario():
+        token = set_current_sandbox(tmp_path)
+        try:
+            return await run_bash("pwd")
+        finally:
+            reset_current_sandbox(token)
+
+    result = asyncio.run(scenario())
+    assert result["exit_code"] == 0
+    assert str(tmp_path) in result["stdout"]

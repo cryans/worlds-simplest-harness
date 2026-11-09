@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 import httpx
 
 from wsh.agent.client import call_model
-from wsh.config import MAX_STEPS, MODEL, MODEL_MAX_RETRIES
+from wsh.config import MAX_STEPS, MODEL, MODEL_MAX_RETRIES, SAMPLE_PROJECT, set_current_sandbox
 from wsh.models import (
     AnswerEvent,
     ErrorEvent,
@@ -57,6 +57,10 @@ async def agent_loop(messages: list[dict], log: SessionLog) -> AsyncGenerator[Ss
     """
     # Work on a copy so the caller's list isn't mutated by surprise.
     convo = [dict(m) for m in messages]
+
+    # The bash tool reads the active sandbox from a ContextVar. Set it here so a
+    # smoke session's /tmp sandbox is used for every tool call in this session.
+    set_current_sandbox(getattr(log, "sandbox", SAMPLE_PROJECT))
 
     # Tell the browser which session this is, so it can reuse the id next turn.
     yield SessionEvent(type="session", session_id=log.session_id)

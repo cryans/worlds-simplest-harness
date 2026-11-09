@@ -2,6 +2,7 @@
 
 import json
 
+from wsh.config import SAMPLE_PROJECT
 from wsh.session import SessionLog
 
 
@@ -105,3 +106,25 @@ def test_next_step_resumes_across_reopen(tmp_path):
 
     # max(step) was 2, so a fresh SessionLog resumes at 3 — no per-turn reset.
     assert SessionLog("steps", logs_dir=tmp_path).next_step() == 3
+
+
+def test_session_log_resumes_sandbox_from_header(tmp_path):
+    log = SessionLog("s", logs_dir=tmp_path)
+    log.write_session("m", "http://x", str(tmp_path / "smoke"), {}, "sys", [])
+
+    resumed = SessionLog("s", logs_dir=tmp_path)
+    assert resumed.sandbox == tmp_path / "smoke"
+
+
+def test_session_log_default_sandbox(tmp_path):
+    log = SessionLog("s", logs_dir=tmp_path)
+    assert log.sandbox == SAMPLE_PROJECT
+
+
+def test_session_log_resumes_latest_sandbox_override(tmp_path):
+    log = SessionLog("s", logs_dir=tmp_path)
+    log.write_session("m", "http://x", str(tmp_path / "smoke"), {}, "sys", [])
+    log.write_sandbox(tmp_path / "normal")
+
+    resumed = SessionLog("s", logs_dir=tmp_path)
+    assert resumed.sandbox == tmp_path / "normal"

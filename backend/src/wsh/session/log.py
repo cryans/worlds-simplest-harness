@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wsh.config import LOGS_DIR
+from wsh.config import LOGS_DIR, SAMPLE_PROJECT
 
 
 def now_iso() -> str:
@@ -23,8 +23,9 @@ class SessionLog:
     since the previous one (its *delta*), never ``[m1]``, ``[m1, m2]``, …
     """
 
-    def __init__(self, session_id: str, logs_dir: Path = LOGS_DIR):
+    def __init__(self, session_id: str, logs_dir: Path = LOGS_DIR, sandbox: Path | None = None):
         self.session_id = session_id
+        self.sandbox = Path(sandbox) if sandbox is not None else SAMPLE_PROJECT
         logs_dir.mkdir(parents=True, exist_ok=True)
         self.path = logs_dir / f"{session_id}.jsonl"
         self._seq, self._logged, self._step = self._resume()
@@ -51,6 +52,8 @@ class SessionLog:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if rec.get("type") in ("session", "sandbox") and rec.get("sandbox"):
+                    self.sandbox = Path(rec["sandbox"])
                 next_seq = max(next_seq, int(rec.get("seq", -1)) + 1)
                 logged = max(logged, int(rec.get("total_messages", 0) or 0))
                 step = max(step, int(rec.get("step", 0) or 0))
@@ -91,6 +94,15 @@ class SessionLog:
                 "tools": tools,
             }
         )
+
+    def write_sandbox(self, sandbox: Path) -> None:
+        """Append a sandbox override for this session.
+
+        The header records the sandbox at session start; a smoke session can later
+        be switched back to the normal sandbox without rewriting history. Replay
+        reads the latest ``sandbox`` record as the active sandbox.
+        """
+        self._append({"type": "sandbox", "sandbox": str(sandbox)})
 
     def write_request(self, convo: list[dict], step: int, model: str) -> None:
         """Log the model request. ``convo`` has the system message at [0]; the
