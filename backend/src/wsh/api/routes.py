@@ -11,7 +11,7 @@ from wsh.api.app import app
 from wsh.config import (
     API_KEY, BASE_URL, MODEL, MAX_STEPS, BASH_TIMEOUT, SAMPLE_PROJECT, LOGS_DIR, SYSTEM_PROMPT,
 )
-from wsh.models import ChatRequest, SessionList, SessionPayload
+from wsh.models import ChatRequest, ErrorEvent, SessionList, SessionPayload
 from wsh.session import SessionLog, _session_meta, _unanswered_tool_call_indexes, prepare_session
 from wsh.sse import sse
 from wsh.tools import TOOLS
@@ -30,7 +30,7 @@ async def chat(req: ChatRequest):
     """Run the agent loop and stream events to the browser."""
     if not API_KEY:
         return StreamingResponse(
-            iter([sse("error", {"message": "Set DEEPSEEK_API_KEY first."})]),
+            iter([sse(ErrorEvent(type="error", message="Set DEEPSEEK_API_KEY first."))]),
             media_type="text/event-stream",
         )
 
@@ -67,7 +67,8 @@ async def chat(req: ChatRequest):
         convo[i] = msg
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + convo
-    return StreamingResponse(agent_loop(messages, log), media_type="text/event-stream")
+    stream = (sse(e) async for e in agent_loop(messages, log))
+    return StreamingResponse(stream, media_type="text/event-stream")
 
 
 @app.get("/api/sessions", response_model=SessionList)

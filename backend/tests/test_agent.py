@@ -32,15 +32,16 @@ def _collect(messages, log):
 
 
 def _parse(blocks):
+    """Turn yielded SseEvent models into (event_name, payload_dict) pairs.
+
+    ``blocks`` is the list returned by ``_collect``: each item is now a Pydantic
+    model, not an encoded SSE string. ``event`` is ``model.type``; ``data`` is the
+    model's own fields (minus ``type``, which the tests assert via ``event``).
+    """
     out = []
-    for block in blocks:
-        event = data = None
-        for line in block.split("\n"):
-            if line.startswith("event: "):
-                event = line[len("event: "):]
-            elif line.startswith("data: "):
-                data = json.loads(line[len("data: "):])
-        out.append((event, data))
+    for model in blocks:
+        data = {k: v for k, v in model.model_dump().items() if k != "type"}
+        out.append((model.type, data))
     return out
 
 

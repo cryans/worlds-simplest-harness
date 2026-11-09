@@ -9,11 +9,10 @@ one-liners; active items get one "why". The full backlog lives elsewhere.
 
 ## Order
 
-1. `session-domain`
-2. `sample-project-rework`
-3. `harness-guardrails`
-4. `document-sdlc`
-5. `mermaid-validation`
+1. `sample-project-rework`
+2. `harness-guardrails`
+3. `document-sdlc`
+4. `mermaid-validation`
 
 ## Done
 
@@ -21,13 +20,9 @@ one-liners; active items get one "why". The full backlog lives elsewhere.
 - `typed-session-contract`
 - `backend-refactor`
 - `model-failure-handling`
+- `event-loop-cleanup`
 
 ## Active
-
-### session-domain
-- Turn state machine: `idle → awaiting_user → tool_calls_pending → tool_results → answered | incomplete | errored`.
-- Per-turn error attachment + `step` semantics landed in `model-failure-handling`. Remaining edge: `prepare_session` keys errors by turn boundary, so a leading assistant turn (no preceding `user` message) misaligns them, and an error before any user message is dropped — the harness never writes such a log, but the state machine should make attribution structural.
-- Why: the dangling-tool-calls repair exists because tool-calling isn't a state.
 
 ### sample-project-rework
 - Env-configurable sandbox path, outside the repo.

@@ -1,9 +1,13 @@
 """Server-Sent Event encoding."""
 
-import json
+from wsh.models import SseEvent
 
 
-def sse(event: str, data: dict) -> str:
-    """Encode one event for the browser as a Server-Sent Event.
-    The type is repeated inside the JSON so the browser can parse it easily."""
-    return f"event: {event}\ndata: {json.dumps({**data, 'type': event})}\n\n"
+def sse(event: SseEvent) -> str:
+    """Encode one event model for the browser as a Server-Sent Event.
+
+    The frame `event:` name and the payload's `"type"` field both come from the
+    model's discriminator (`event.type`), and `model_dump_json()` already emits the
+    `"type"` field — so the two can't drift.
+    """
+    return f"event: {event.type}\ndata: {event.model_dump_json()}\n\n"
