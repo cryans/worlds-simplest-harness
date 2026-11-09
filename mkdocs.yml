@@ -10,3 +10,4 @@ nav:
   - Getting Started: getting-started.md
   - Architecture: architecture.md
   - Tools: tools.md
+  - Smoke Test: smoke-test.md

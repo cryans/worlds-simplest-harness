@@ -19,3 +19,4 @@ until it finishes and answers you.
 1. [Getting Started](getting-started.md) — run it in two terminals.
 2. [Architecture](architecture.md) — how a request flows through the harness.
 3. [Tools](tools.md) — the `@tool` decorator and how to add your own tool.
+4. [Smoke Test](smoke-test.md) — the manual end-to-end check to run after loop/SSE changes.
