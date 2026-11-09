@@ -3,7 +3,11 @@
 import json
 import pathlib
 
-from wsh.session import _unanswered_tool_call_indexes, prepare_session
+from wsh.session import (
+    _unanswered_tool_call_indexes,
+    prepare_session,
+    sanitize_messages,
+)
 
 _REAL_LOG = (
     pathlib.Path(__file__).resolve().parent
@@ -150,3 +154,103 @@ def test_error_attaches_to_correct_turn(tmp_path):
     turns = prepare_session(path).turns
     assert turns[0].error == "boom"
     assert turns[1].error is None
+
+
+# --- sanitize_messages: the invariant gate run before every model call ---
+
+
+def _assistant_tool_call(tcid, content=""):
+    return {"role": "assistant", "content": content, "tool_calls": [{"id": tcid}]}
+
+
+def test_sanitize_drops_orphan_tool_reply():
+    # A `tool` whose id no preceding assistant tool_calls owns -> dropped.
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "tool_call_id": "tlost", "content": "{}"},
+        {"role": "user", "content": "again"},
+    ]
+    out = sanitize_messages(msgs)
+    assert out == [{"role": "user", "content": "hi"}, {"role": "user", "content": "again"}]
+
+
+def test_sanitize_drops_duplicate_tool_reply():
+    # The exact corruption from the broken driver session: a tool reply repeated
+    # after its owning assistant, leaving the second copy orphaned.
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _assistant_tool_call("t1"),
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+        {"role": "assistant", "content": "done"},
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},  # duplicate orphan
+        {"role": "user", "content": "next"},
+    ]
+    out = sanitize_messages(msgs)
+    # Only the first, valid reply survives; the orphan duplicate is dropped.
+    tool_replies = [m for m in out if m.get("role") == "tool"]
+    assert len(tool_replies) == 1
+    assert tool_replies[0]["tool_call_id"] == "t1"
+    # every tool message still follows an assistant that owns its id
+    for i, m in enumerate(out):
+        if m.get("role") == "tool":
+            prev = out[i - 1]
+            assert prev.get("role") == "assistant"
+            assert m["tool_call_id"] in {tc["id"] for tc in prev["tool_calls"]}
+
+
+def test_sanitize_drops_dangling_tool_calls():
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _assistant_tool_call("t1"),  # no tool reply follows
+        {"role": "user", "content": "next"},
+    ]
+    out = sanitize_messages(msgs)
+    assert "tool_calls" not in out[1]
+
+
+def test_sanitize_keeps_valid_tool_roundtrip_and_normalizes_null():
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "t1"}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "assistant", "content": None},
+    ]
+    out = sanitize_messages(msgs)
+    assert out[1]["content"] == "" and "tool_calls" in out[1]
+    assert out[3]["content"] == ""
+    assert all(m.get("content") is not None for m in out)
+
+
+def test_sanitize_parallel_tool_calls_keeps_both_replies():
+    # Two parallel tool calls from one assistant, answered adjacently, stay put.
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "a"}, {"id": "b"}]},
+        {"role": "tool", "tool_call_id": "a", "content": "{}"},
+        {"role": "tool", "tool_call_id": "b", "content": "{}"},
+        {"role": "assistant", "content": "done"},
+    ]
+    out = sanitize_messages(msgs)
+    assert [m.get("tool_call_id") for m in out if m.get("role") == "tool"] == ["a", "b"]
+
+
+def test_sanitize_deduplicates_assistant_tool_call_issuance():
+    # The broken session's deeper signature: the assistant message with its
+    # tool_calls was duplicated, so two assistants claimed the same id. Only the
+    # first issuance survives; the second assistant's duplicate is stripped.
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _assistant_tool_call("t1"),
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},
+        _assistant_tool_call("t1"),  # duplicate issuance
+        {"role": "tool", "tool_call_id": "t1", "content": "out"},  # duplicate reply
+        {"role": "user", "content": "next"},
+    ]
+    out = sanitize_messages(msgs)
+    # exactly one issuer of t1, exactly one tool reply
+    issuers = [m for m in out if m.get("role") == "assistant" and any(
+        tc.get("id") == "t1" for tc in (m.get("tool_calls") or []))]
+    replies = [m for m in out if m.get("role") == "tool" and m.get("tool_call_id") == "t1"]
+    assert len(issuers) == 1
+    assert len(replies) == 1
+    assert _unanswered_tool_call_indexes(out) == []

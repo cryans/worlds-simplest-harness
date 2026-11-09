@@ -23,9 +23,16 @@ class SessionLog:
     since the previous one (its *delta*), never ``[m1]``, ``[m1, m2]``, …
     """
 
-    def __init__(self, session_id: str, logs_dir: Path = LOGS_DIR, sandbox: Path | None = None):
+    def __init__(
+        self,
+        session_id: str,
+        logs_dir: Path = LOGS_DIR,
+        sandbox: Path | None = None,
+        mode: str = "normal",
+    ):
         self.session_id = session_id
         self.sandbox = Path(sandbox) if sandbox is not None else SAMPLE_PROJECT
+        self.mode = mode
         logs_dir.mkdir(parents=True, exist_ok=True)
         self.path = logs_dir / f"{session_id}.jsonl"
         self._seq, self._logged, self._step = self._resume()
@@ -34,11 +41,19 @@ class SessionLog:
         """Scan an existing file to continue where it left off.
 
         Returns ``(next_seq, logged_messages, next_step)``. ``logged_messages``
-        is the highest ``total_messages`` already written, so a history replayed
-        by the browser is never logged twice. ``next_step`` is the next round-trip
-        number (``max(step)+1``), so steps never reset between turns. Torn/partial
-        trailing lines are ignored (they are the cost of a crash mid-append, which
-        we don't try to repair).
+        is the number of conversation messages the file has already recorded, so
+        a history replayed by the browser is never logged twice. ``next_step``
+        is the next round-trip number (``max(step)+1``), so steps never reset
+        between turns. Torn/partial trailing lines are ignored (they are the
+        cost of a crash mid-append, which we don't try to repair).
+
+        ``logged`` is the *count* of messages recorded via ``request`` deltas
+        (``len(delta)`` each) plus one per ``response`` — not the stored
+        ``total_messages`` field. The stored field can drift after an aborted
+        turn (a ``response`` records its count *before* the loop appends the
+        following ``tool`` results), so trusting it makes ``write_request``
+        re-emit already-known messages as new deltas, which corrupts the wire
+        history with duplicate ``tool``/``assistant`` messages.
         """
         next_seq = 0
         logged = 0
@@ -52,10 +67,16 @@ class SessionLog:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("type") in ("session", "sandbox") and rec.get("sandbox"):
+                rtype = rec.get("type")
+                if rtype in ("session", "sandbox") and rec.get("sandbox"):
                     self.sandbox = Path(rec["sandbox"])
+                if rec.get("mode"):
+                    self.mode = rec["mode"]
                 next_seq = max(next_seq, int(rec.get("seq", -1)) + 1)
-                logged = max(logged, int(rec.get("total_messages", 0) or 0))
+                if rtype == "request":
+                    logged += len(rec.get("delta") or [])
+                elif rtype == "response":
+                    logged += 1
                 step = max(step, int(rec.get("step", 0) or 0))
         return next_seq, logged, step + 1
 
@@ -79,7 +100,9 @@ class SessionLog:
             f.write(json.dumps(record, default=str) + "\n")
         self._seq += 1
 
-    def write_session(self, model, base_url, sandbox, config, system_prompt, tools) -> None:
+    def write_session(
+        self, model, base_url, sandbox, config, system_prompt, tools, mode="normal"
+    ) -> None:
         """The one-time header: static config, so it isn't repeated per request."""
         if self._seq != 0:  # header already written for an existing file
             return
@@ -89,11 +112,16 @@ class SessionLog:
                 "model": model,
                 "base_url": base_url,
                 "sandbox": sandbox,
+                "mode": mode,
                 "config": config,
                 "system_prompt": system_prompt,
                 "tools": tools,
             }
         )
+
+    def write_mode(self, mode: str) -> None:
+        """Append a mode override for this session (e.g. smoke -> normal)."""
+        self._append({"type": "mode", "mode": mode})
 
     def write_sandbox(self, sandbox: Path) -> None:
         """Append a sandbox override for this session.

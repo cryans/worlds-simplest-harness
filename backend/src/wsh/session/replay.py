@@ -71,6 +71,95 @@ def _unanswered_tool_call_indexes(messages: list[dict]) -> list[int]:
     return dangling
 
 
+def sanitize_messages(messages: list[dict]) -> list[dict]:
+    """Return a copy of ``messages`` that satisfies the OpenAI wire invariants.
+
+    The model rejects a history where any ``tool`` message is not a reply to an
+    immediately-preceding ``assistant`` ``tool_calls``, where a ``tool_call_id``
+    repeats, or where ``content`` is ``None``. This is the single enforcement
+    point that guarantees those invariants before the list is handed to the
+    model, repairing (never raising on) whatever a replayed/echoed history
+    drifted into:
+
+    - assistant ``content: None`` becomes ``""``;
+    - a ``tool_call_id`` issued by more than one assistant is kept on the first
+      issuer and stripped from later ones (a duplicated assistant + tool pair —
+      the delta re-emission signature of the broken session);
+    - an assistant's ``tool_calls`` whose replies are missing is dropped (the
+      dangling-call repair);
+    - a ``tool`` message whose ``tool_call_id`` is not owned by the preceding
+      assistant ``tool_calls`` run is dropped (an orphan — e.g. a duplicated
+      reply left over from a delta re-emission);
+    - a repeated ``tool_call_id`` reply is dropped (keep the first).
+
+    Drop decisions are made on the raw list so a malformed run of adjacent
+    ``tool`` replies degrades to "no replies" rather than a partially-broken
+    adjacency, which the model would still reject.
+    """
+    out: list[dict] = []
+    for i, msg in enumerate(messages):
+        m = dict(msg)
+        if m.get("content") is None:
+            m["content"] = ""
+        out.append(m)
+
+    # 1. A `tool_call_id` may be issued by exactly one assistant. Strip it from
+    #    any later assistant that re-issues it (a duplicated assistant+tool pair
+    #    from a delta re-emission leaves two issuers for one id).
+    issued: set = set()
+    for m in out:
+        if m.get("role") != "assistant":
+            continue
+        kept = []
+        for tc in m.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            tcid = tc.get("id")
+            if tcid is None or tcid in issued:
+                continue
+            issued.add(tcid)
+            kept.append(tc)
+        if kept:
+            m["tool_calls"] = kept
+        elif "tool_calls" in m:
+            # All of this assistant's ids were already issued earlier (a full
+            # duplicate) — drop the now-empty tool_calls array.
+            m.pop("tool_calls", None)
+
+    # 2. Drop the assistant tool_calls whose replies are missing entirely.
+    for i in _unanswered_tool_call_indexes(out):
+        out[i].pop("tool_calls", None)
+
+    # 3. Drop orphan / duplicate tool replies. A `tool` is valid only when the
+    #    assistant that owns its id appears at the start of the immediately-
+    #    preceding run of adjacent `tool`/`assistant` messages, and that id has
+    #    not already been answered.
+    answered: set = set()
+    result: list[dict] = []
+    for msg in out:
+        if msg.get("role") == "tool":
+            tcid = msg.get("tool_call_id")
+            # Find the owning assistant: walk back over the immediately
+            # preceding run of `tool` replies (parallel calls) to the assistant
+            # whose tool_calls opened the block.
+            owner_ids: set = set()
+            j = len(result) - 1
+            while j >= 0 and result[j].get("role") == "tool":
+                j -= 1
+            if j >= 0 and result[j].get("role") == "assistant":
+                owner_ids = {
+                    tc.get("id")
+                    for tc in (result[j].get("tool_calls") or [])
+                    if isinstance(tc, dict)
+                }
+            if tcid is None or tcid not in owner_ids or tcid in answered:
+                continue
+            answered.add(tcid)
+        result.append(msg)
+
+    return result
+
+
 def prepare_session(path: Path) -> SessionPayload:
     """Rebuild UI-only state from a session log. Read-only; never calls the model.
 

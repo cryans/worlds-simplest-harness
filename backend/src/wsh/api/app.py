@@ -39,3 +39,10 @@ app.openapi = custom_openapi
 
 # Importing the routes module binds the endpoints to `app`.
 from wsh.api import routes  # noqa: E402, F401
+
+# Importing a plugin registers it with the `wsh.plugins` seam. The smoke plugin
+# lives on the sandbox branch; the seam itself has no smoke reference.
+try:
+    import wsh.plugins.smoke  # noqa: E402, F401
+except ImportError:
+    pass

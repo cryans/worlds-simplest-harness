@@ -3,7 +3,7 @@
 import httpx
 
 from wsh.config import API_KEY, BASE_URL, MODEL
-from wsh.tools import TOOLS
+from wsh.plugins import get_current_tools
 
 
 async def call_model(messages: list[dict]) -> dict:
@@ -12,7 +12,7 @@ async def call_model(messages: list[dict]) -> dict:
         resp = await client.post(
             f"{BASE_URL}/chat/completions",
             headers={"Authorization": f"Bearer {API_KEY}"},
-            json={"model": MODEL, "messages": messages, "tools": TOOLS},
+            json={"model": MODEL, "messages": messages, "tools": get_current_tools()},
             timeout=60,
         )
         resp.raise_for_status()

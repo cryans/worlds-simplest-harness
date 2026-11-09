@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 import httpx
 
 from wsh.agent.client import call_model
-from wsh.config import MAX_STEPS, MODEL, MODEL_MAX_RETRIES, SAMPLE_PROJECT, set_current_sandbox
+from wsh.config import MAX_STEPS, MODEL, MODEL_MAX_RETRIES
 from wsh.models import (
     AnswerEvent,
     ErrorEvent,
@@ -18,8 +18,9 @@ from wsh.models import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from wsh.session import SessionLog
-from wsh.tools import TOOL_REGISTRY, call_tool
+from wsh.session import SessionLog, sanitize_messages
+from wsh.plugins import get_current_registry
+from wsh.tools import call_tool
 
 RETRY_BACKOFF_S = 1.0  # seconds between retry attempts (exponential/jitter out of scope)
 
@@ -49,7 +50,7 @@ async def agent_loop(messages: list[dict], log: SessionLog) -> AsyncGenerator[Ss
     Steps:
       1. ask the model
       2. no tool calls? -> stream the answer and stop
-      3. tool calls? -> look each one up in TOOL_REGISTRY, run it,
+      3. tool calls? -> look each one up in the session registry, run it,
          stream its result, append a 'tool' message, and go back to step 1
 
     Every model request/response is also appended to the session's JSONL log,
@@ -57,10 +58,6 @@ async def agent_loop(messages: list[dict], log: SessionLog) -> AsyncGenerator[Ss
     """
     # Work on a copy so the caller's list isn't mutated by surprise.
     convo = [dict(m) for m in messages]
-
-    # The bash tool reads the active sandbox from a ContextVar. Set it here so a
-    # smoke session's /tmp sandbox is used for every tool call in this session.
-    set_current_sandbox(getattr(log, "sandbox", SAMPLE_PROJECT))
 
     # Tell the browser which session this is, so it can reuse the id next turn.
     yield SessionEvent(type="session", session_id=log.session_id)
@@ -77,6 +74,10 @@ async def agent_loop(messages: list[dict], log: SessionLog) -> AsyncGenerator[Ss
         attempts = 0
         while True:
             try:
+                # Enforce the wire invariants immediately before the call: a
+                # history assembled out-of-band (or drifted mid-loop) must never
+                # reach the model with an orphan/duplicate `tool` message.
+                convo = sanitize_messages(convo)
                 data = await call_model(convo)
                 break
             except Exception as e:
@@ -124,7 +125,7 @@ async def agent_loop(messages: list[dict], log: SessionLog) -> AsyncGenerator[Ss
         for tc in tool_calls:
             fn = tc.get("function") or {}
             name = fn.get("name")
-            func = TOOL_REGISTRY.get(name)
+            func = get_current_registry().get(name)
 
             if func is None:
                 yield ToolResultEvent(

@@ -95,6 +95,48 @@ def test_session_log_self_heals_cursor_after_lost_turn(tmp_path):
     assert reqs[-1]["delta"] == [{"role": "user", "content": "2"}]
 
 
+def test_tool_messages_after_last_response_are_not_re_emitted(tmp_path):
+    """A resumed request must not re-emit messages already in the file.
+
+    Regression for the broken driver session: after a tool round-trip is fully
+    recorded (request + response + following request carrying the ``tool``
+    result), the ``_resume`` cursor must count the messages *actually recorded*
+    (request deltas + one per response) rather than the stored
+    ``total_messages`` field. That field drifts after an aborted turn — a
+    ``response`` records its count before the loop appends the following
+    ``tool`` results — so trusting it makes the next ``write_request`` re-emit
+    already-known ``tool``/``assistant`` messages as new deltas, corrupting the
+    wire history into a ``tool``-before-``tool_calls`` 400 error.
+    """
+    log = SessionLog("tool-tail", logs_dir=tmp_path)
+    log.write_session("m", "http://x", "/s", {}, "sys", [])
+    # A full tool round-trip, all recorded:
+    #   user -> assistant(tool_calls) -> tool result -> assistant(stop)
+    convo = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "a"},
+    ]
+    log.write_request(convo, 1, "m")
+
+    convo.append({"role": "assistant", "content": "", "tool_calls": [{"id": "t1"}]})
+    log.write_response(convo[-1], 1, "m", 10, "tool_calls", {})
+
+    convo.append({"role": "tool", "tool_call_id": "t1", "content": "out"})
+    log.write_request(convo, 2, "m")
+
+    convo.append({"role": "assistant", "content": "done"})
+    log.write_response(convo[-1], 2, "m", 10, "stop", {})
+
+    # Resume on a later turn: the browser echoes the full history + a new user
+    # message. None of the already-recorded messages may be re-emitted.
+    resumed = SessionLog("tool-tail", logs_dir=tmp_path)
+    full = convo + [{"role": "user", "content": "b"}]
+    resumed.write_request(full, 3, "m")
+
+    reqs = [r for r in _read_log(tmp_path, "tool-tail") if r.get("type") == "request"]
+    assert reqs[-1]["delta"] == [{"role": "user", "content": "b"}], reqs[-1]["delta"]
+
+
 def test_next_step_resumes_across_reopen(tmp_path):
     log = SessionLog("steps", logs_dir=tmp_path)
     log.write_session("m", "http://x", "/s", {}, "sys", [])
@@ -128,3 +170,25 @@ def test_session_log_resumes_latest_sandbox_override(tmp_path):
 
     resumed = SessionLog("s", logs_dir=tmp_path)
     assert resumed.sandbox == tmp_path / "normal"
+
+
+def test_session_log_default_mode(tmp_path):
+    log = SessionLog("s", logs_dir=tmp_path)
+    assert log.mode == "normal"
+
+
+def test_session_log_resumes_mode_from_header(tmp_path):
+    log = SessionLog("s", logs_dir=tmp_path, mode="smoke")
+    log.write_session("m", "http://x", str(tmp_path / "smoke"), {}, "sys", [], mode="smoke")
+
+    resumed = SessionLog("s", logs_dir=tmp_path)
+    assert resumed.mode == "smoke"
+
+
+def test_session_log_resumes_latest_mode_override(tmp_path):
+    log = SessionLog("s", logs_dir=tmp_path, mode="smoke")
+    log.write_session("m", "http://x", str(tmp_path / "smoke"), {}, "sys", [], mode="smoke")
+    log.write_mode("normal")
+
+    resumed = SessionLog("s", logs_dir=tmp_path)
+    assert resumed.mode == "normal"
