@@ -149,3 +149,74 @@ def test_4xx_fails_immediately_no_retry(tmp_path, monkeypatch):
     assert "401" in errors[0]["message"]
     retries = [d for e, d in blocks if e == "status" and d["text"].startswith("retrying")]
     assert retries == []
+
+
+def _tool_call_response(name, arguments):
+    """An assistant message whose only content is one tool call."""
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(arguments)},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {},
+    }
+
+
+def _plain_response(content):
+    return {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {},
+    }
+
+
+def test_tool_exception_logs_error_and_streams_tool_result(tmp_path, monkeypatch):
+    """A raising tool must not kill the stream: it becomes a `tool_result`
+    error payload *and* an `error` record in the JSONL (like a model failure)."""
+    responses = iter([_tool_call_response("bash", {"command": "true"}), _plain_response("done")])
+
+    async def fake_model(convo):
+        return next(responses)
+
+    async def fake_tool(func, args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(loop, "call_model", fake_model)
+    monkeypatch.setattr(loop, "call_tool", fake_tool)
+
+    log = SessionLog("s1", logs_dir=tmp_path)
+    blocks = _parse(_collect(_messages(), log))
+
+    # Streamed a tool_result carrying the error (not a crash).
+    tool_results = [d for e, d in blocks if e == "tool_result"]
+    assert len(tool_results) == 1
+    assert tool_results[0]["result"]["error"] == "RuntimeError: boom"
+
+    # And the loop continued to the next round-trip and answered.
+    answers = [d for e, d in blocks if e == "answer"]
+    assert len(answers) == 1
+
+    # The JSONL carries an error record naming the exception.
+    lines = (tmp_path / "s1.jsonl").read_text().splitlines()
+    types = [json.loads(line)["type"] for line in lines if line.strip()]
+    assert "error" in types
+    error_line = next(
+        json.loads(line) for line in lines if json.loads(line).get("type") == "error"
+    )
+    assert "boom" in error_line["message"]

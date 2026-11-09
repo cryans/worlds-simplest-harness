@@ -136,7 +136,15 @@ async def agent_loop(messages: list[dict], log: SessionLog) -> AsyncGenerator[Ss
                 args = {}
 
             yield ToolCallEvent(type="tool_call", name=name, args=args)
-            result = await call_tool(func, args)
+            try:
+                result = await call_tool(func, args)
+            except Exception as e:
+                # A tool raising must not kill the stream (unlike a model error,
+                # which we already catch). Surface it as a tool_result error so
+                # the browser renders it, and write an error record so it survives
+                # in the JSONL and replays like a model-call failure does.
+                result = {"error": f"{type(e).__name__}: {e}"}
+                log.write_error(result["error"], step)
             yield ToolResultEvent(type="tool_result", name=name, result=result)
 
             # Append a proper "tool" message so the model sees the output.
