@@ -41,8 +41,12 @@ app.openapi = custom_openapi
 from wsh.api import routes  # noqa: E402, F401
 
 # Importing a plugin registers it with the `wsh.plugins` seam. The smoke plugin
-# lives on the sandbox branch; the seam itself has no smoke reference.
+# lives on the sandbox branch, so on this one its absence is expected and ignored.
+# Ignore *only* its absence: a missing module inside the plugin is a real
+# breakage, and swallowing it would silently downgrade a smoke session to
+# unsandboxed normal mode.
 try:
     import wsh.plugins.smoke  # noqa: E402, F401
-except ImportError:
-    pass
+except ModuleNotFoundError as exc:
+    if exc.name != "wsh.plugins.smoke":
+        raise
